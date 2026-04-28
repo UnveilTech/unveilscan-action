@@ -1,5 +1,5 @@
 name: Unveilscan
-description: Run a passive web security audit (DNS, TLS, headers, email, leaks, CVE) and fail the build on configurable severity. Score /100, multi-category, no scanning credit needed for Basic.
+description: Passive web security audit. 89 checks (DNS, TLS, headers, email, leaks, CVE). Scoring /100. Free tier.
 author: Unveiltech
 branding:
   icon: shield
