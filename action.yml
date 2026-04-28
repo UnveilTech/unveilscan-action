@@ -1,0 +1,125 @@
+name: Unveilscan
+description: Run a passive web security audit (DNS, TLS, headers, email, leaks, CVE) and fail the build on configurable severity. Score /100, multi-category, no scanning credit needed for Basic.
+author: Unveiltech
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  domain:
+    description: The domain to scan. For Extended/Active, must be verified under the account tied to the token.
+    required: true
+  token:
+    description: Bearer token from Unveilscan Settings → Tokens. Pass via `${{ secrets.UNVEILSCAN_TOKEN }}`.
+    required: true
+  profile:
+    description: 'Scan profile: basic | extended | active.'
+    default: basic
+    required: false
+  base-url:
+    description: Unveilscan API base URL. Default is the SaaS at unveilscan.com — override for self-hosted instances.
+    default: https://unveilscan.com
+    required: false
+  fail-on:
+    description: 'Minimum severity to fail the build: info | low | medium | high | critical.'
+    default: high
+    required: false
+  ack-active:
+    description: Set to "true" when `profile: active` to acknowledge intrusive probes (legal gate).
+    default: 'false'
+    required: false
+  include-ssllabs:
+    description: Enable the opt-in Qualys SSL Labs deep TLS pass (slower).
+    default: 'false'
+    required: false
+  output:
+    description: 'Output format: text | json | csv.'
+    default: text
+    required: false
+  timeout:
+    description: Overall deadline (Go duration, e.g. 10m).
+    default: 10m
+    required: false
+  cli-version:
+    description: Version of unveilscan-cli to download. Defaults to the tag the action was pinned at (e.g. v1.0.0). Set to "latest" to always pull the newest release.
+    default: ''
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Download unveilscan-cli
+      shell: bash
+      env:
+        ACTION_REF: ${{ github.action_ref }}
+        CLI_VERSION_INPUT: ${{ inputs.cli-version }}
+      run: |
+        set -euo pipefail
+
+        VERSION="${CLI_VERSION_INPUT:-}"
+        if [ -z "$VERSION" ]; then
+          VERSION="$ACTION_REF"
+        fi
+        if [ -z "$VERSION" ] || [ "$VERSION" = "main" ] || [ "$VERSION" = "master" ]; then
+          VERSION="latest"
+        fi
+
+        ARCH="$(uname -m)"
+        case "$ARCH" in
+          x86_64|amd64) ARCH=amd64 ;;
+          aarch64|arm64) ARCH=arm64 ;;
+          *) echo "::error::Unsupported architecture: $ARCH" >&2; exit 3 ;;
+        esac
+
+        REPO="unveiltech/unveilscan-action"
+        if [ "$VERSION" = "latest" ]; then
+          API="https://api.github.com/repos/${REPO}/releases/latest"
+          VERSION="$(curl -fsSL "$API" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+        fi
+
+        BIN="unveilscan-cli-linux-${ARCH}"
+        URL="https://github.com/${REPO}/releases/download/${VERSION}/${BIN}"
+        SUM_URL="${URL}.sha256"
+
+        echo "Downloading ${BIN} from ${VERSION}..."
+        curl -fsSL --retry 3 "$URL" -o /tmp/unveilscan-cli
+        curl -fsSL --retry 3 "$SUM_URL" -o /tmp/unveilscan-cli.sha256
+
+        # Verify checksum (sha256 file is "<hash>  <filename>")
+        EXPECTED="$(awk '{print $1}' /tmp/unveilscan-cli.sha256)"
+        ACTUAL="$(sha256sum /tmp/unveilscan-cli | awk '{print $1}')"
+        if [ "$EXPECTED" != "$ACTUAL" ]; then
+          echo "::error::Checksum mismatch — refusing to install. expected=$EXPECTED got=$ACTUAL" >&2
+          exit 2
+        fi
+
+        sudo install -m 0755 /tmp/unveilscan-cli /usr/local/bin/unveilscan-cli
+        unveilscan-cli -version
+
+    - name: Run scan
+      shell: bash
+      env:
+        UNVEILSCAN_TOKEN: ${{ inputs.token }}
+        DOMAIN: ${{ inputs.domain }}
+        PROFILE: ${{ inputs.profile }}
+        BASE_URL: ${{ inputs.base-url }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        OUTPUT: ${{ inputs.output }}
+        TIMEOUT: ${{ inputs.timeout }}
+        ACK_ACTIVE: ${{ inputs.ack-active }}
+        INCLUDE_SSLLABS: ${{ inputs.include-ssllabs }}
+      run: |
+        set -eu
+        args=(-domain "$DOMAIN" \
+              -profile "$PROFILE" \
+              -base-url "$BASE_URL" \
+              -fail-on "$FAIL_ON" \
+              -output "$OUTPUT" \
+              -timeout "$TIMEOUT")
+        if [ "$ACK_ACTIVE" = "true" ]; then
+          args+=(-ack-active)
+        fi
+        if [ "$INCLUDE_SSLLABS" = "true" ]; then
+          args+=(-ssllabs)
+        fi
+        unveilscan-cli "${args[@]}"
